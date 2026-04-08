@@ -1,0 +1,185 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  AGENT
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum WhatsappSessionStatus {
+  DISCONNECTED
+  CONNECTING
+  QR_PENDING
+  CONNECTED
+  FAILED
+}
+
+enum ConversationStatus {
+  WAITING
+  IN_PROGRESS
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+  INTERNAL
+  SYSTEM
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  AUDIO
+  VIDEO
+  DOCUMENT
+  STICKER
+  LOCATION
+  CONTACT
+  UNKNOWN
+}
+
+enum AssignmentActionType {
+  ASSIGNED
+  TRANSFERRED
+  UNASSIGNED
+  CLOSED
+  REOPENED
+}
+
+model User {
+  id                    String                   @id @default(cuid())
+  name                  String
+  email                 String                   @unique
+  passwordHash          String
+  role                  UserRole                 @default(AGENT)
+  status                UserStatus               @default(ACTIVE)
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  assignedConversations Conversation[]           @relation("CurrentAssignee")
+  notes                 InternalNote[]
+  assignmentActions     ConversationAssignment[] @relation("ActionByUser")
+  sentMessages          Message[]                @relation("SentByUser")
+}
+
+model WhatsappSession {
+  id            String                @id @default(cuid())
+  name          String
+  sessionKey    String                @unique
+  status        WhatsappSessionStatus @default(DISCONNECTED)
+  qrCode        String?
+  phoneNumber   String?
+  wid           String?
+  lastSeenAt    DateTime?
+  connectedAt   DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  conversations Conversation[]
+  contacts      Contact[]
+}
+
+model Contact {
+  id                String          @id @default(cuid())
+  whatsappSessionId String
+  phone             String
+  name              String?
+  pushName          String?
+  profilePicUrl     String?
+  whatsappId        String
+  isBlocked         Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  whatsappSession   WhatsappSession @relation(fields: [whatsappSessionId], references: [id], onDelete: Cascade)
+  conversations     Conversation[]
+
+  @@unique([whatsappSessionId, phone])
+  @@unique([whatsappSessionId, whatsappId])
+}
+
+model Conversation {
+  id                String                   @id @default(cuid())
+  whatsappSessionId String
+  contactId         String
+  subject           String?
+  status            ConversationStatus       @default(WAITING)
+  currentAssigneeId String?
+  startedAt         DateTime                 @default(now())
+  closedAt          DateTime?
+  lastMessageAt     DateTime?
+  lastInboundAt     DateTime?
+  lastOutboundAt    DateTime?
+  unreadCount       Int                      @default(0)
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  whatsappSession   WhatsappSession          @relation(fields: [whatsappSessionId], references: [id], onDelete: Cascade)
+  contact           Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  currentAssignee   User?                    @relation("CurrentAssignee", fields: [currentAssigneeId], references: [id], onDelete: SetNull)
+  messages          Message[]
+  notes             InternalNote[]
+  assignments       ConversationAssignment[]
+
+  @@index([status, currentAssigneeId])
+  @@index([whatsappSessionId, lastMessageAt])
+  @@unique([whatsappSessionId, contactId])
+}
+
+model Message {
+  id                String           @id @default(cuid())
+  conversationId    String
+  sentByUserId      String?
+  externalMessageId String?          @unique
+  direction         MessageDirection
+  type              MessageType      @default(TEXT)
+  body              String?
+  mediaUrl          String?
+  mimeType          String?
+  fileName          String?
+  rawPayload        Json?
+  fromMe            Boolean          @default(false)
+  sentAt            DateTime
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  createdAt         DateTime         @default(now())
+  conversation      Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sentByUser        User?            @relation("SentByUser", fields: [sentByUserId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, sentAt])
+}
+
+model InternalNote {
+  id             String       @id @default(cuid())
+  conversationId String
+  userId         String
+  body           String
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+model ConversationAssignment {
+  id             String               @id @default(cuid())
+  conversationId String
+  actionByUserId String
+  fromUserId     String?
+  toUserId       String?
+  actionType     AssignmentActionType
+  note           String?
+  createdAt      DateTime             @default(now())
+  conversation   Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  actionByUser   User                 @relation("ActionByUser", fields: [actionByUserId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
