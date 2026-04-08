@@ -59,17 +59,20 @@ enum AssignmentActionType {
 }
 
 model User {
-  id                    String                   @id @default(cuid())
-  name                  String
-  email                 String                   @unique
-  passwordHash          String
-  role                  UserRole                 @default(AGENT)
-  status                UserStatus               @default(ACTIVE)
-  createdAt             DateTime                 @default(now())
-  updatedAt             DateTime                 @updatedAt
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         UserRole   @default(AGENT)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
   assignedConversations Conversation[]           @relation("CurrentAssignee")
   notes                 InternalNote[]
   assignmentActions     ConversationAssignment[] @relation("ActionByUser")
+  assignmentFrom        ConversationAssignment[] @relation("AssignmentFromUser")
+  assignmentTo          ConversationAssignment[] @relation("AssignmentToUser")
   sentMessages          Message[]                @relation("SentByUser")
 }
 
@@ -129,9 +132,9 @@ model Conversation {
   notes             InternalNote[]
   assignments       ConversationAssignment[]
 
+  @@unique([whatsappSessionId, contactId])
   @@index([status, currentAssigneeId])
   @@index([whatsappSessionId, lastMessageAt])
-  @@unique([whatsappSessionId, contactId])
 }
 
 model Message {
@@ -155,6 +158,7 @@ model Message {
   sentByUser        User?            @relation("SentByUser", fields: [sentByUserId], references: [id], onDelete: SetNull)
 
   @@index([conversationId, sentAt])
+  @@index([externalMessageId])
 }
 
 model InternalNote {
@@ -178,8 +182,11 @@ model ConversationAssignment {
   actionType     AssignmentActionType
   note           String?
   createdAt      DateTime             @default(now())
-  conversation   Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  actionByUser   User                 @relation("ActionByUser", fields: [actionByUserId], references: [id], onDelete: Cascade)
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  actionByUser User         @relation("ActionByUser", fields: [actionByUserId], references: [id], onDelete: Cascade)
+  fromUser     User?        @relation("AssignmentFromUser", fields: [fromUserId], references: [id])
+  toUser       User?        @relation("AssignmentToUser", fields: [toUserId], references: [id])
 
   @@index([conversationId, createdAt])
 }

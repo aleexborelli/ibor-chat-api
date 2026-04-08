@@ -68,12 +68,13 @@ export async function handleIncomingWhatsappMessage(message) {
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        status: conversation.status === "CLOSED" ? "WAITING" : conversation.status,
-        lastMessageAt: sentAt,
-        lastInboundAt: sentAt,
-        unreadCount: { increment: 1 },
-        closedAt: null,
-      },
+        status:
+          conversation.status === "CLOSED" ? "WAITING" : conversation.status,
+          lastMessageAt: sentAt,
+          lastInboundAt: sentAt,
+          unreadCount: { increment: 1 },
+          closedAt: null,
+        },
       include: {
         contact: true,
         currentAssignee: true,
@@ -93,13 +94,38 @@ export async function handleIncomingWhatsappMessage(message) {
     return existingMessage;
   }
 
+  let messageType = "TEXT";
+  let mediaUrl = null;
+  let mimeType = null;
+  let fileName = null;
+
+  if (message.hasMedia) {
+    const mime = message._data?.mimetype || "";
+
+    if (mime.startsWith("image/")) {
+      messageType = "IMAGE";
+    } else if (mime.startsWith("audio/")) {
+      messageType = "AUDIO";
+    } else if (mime.startsWith("video/")) {
+      messageType = "VIDEO";
+    } else {
+      messageType = "DOCUMENT";
+    }
+
+    mimeType = mime;
+    fileName = message._data?.filename || null;
+  }
+
   const savedMessage = await prisma.message.create({
     data: {
       conversationId: conversation.id,
       externalMessageId: message.id._serialized,
       direction: "INBOUND",
-      type: "TEXT",
-      body: message.body || "",
+      type: messageType,
+      body: message.body || null,
+      mediaUrl: mediaUrl,
+      mimeType,
+      fileName,
       rawPayload: message?._data ?? null,
       fromMe: false,
       sentAt,
@@ -145,10 +171,7 @@ export async function handleOutgoingWhatsappMessage(message) {
   const normalizedPhone = (contactInfo?.number || "").replace(/\D/g, "");
 
   const contactName =
-    contactInfo?.pushname ||
-    contactInfo?.name ||
-    normalizedPhone ||
-    chatId;
+    contactInfo?.pushname || contactInfo?.name || normalizedPhone || chatId;
 
   if (chat?.isGroup) {
     console.log("OUTBOUND: ignorando grupo neste momento");
@@ -541,7 +564,9 @@ export async function sendMessageFromConversation({
     data: {
       lastMessageAt: sentAt,
       lastOutboundAt: sentAt,
-      status: conversation.currentAssigneeId ? "IN_PROGRESS" : conversation.status,
+      status: conversation.currentAssigneeId
+        ? "IN_PROGRESS"
+        : conversation.status,
     },
   });
 
