@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma.js";
 import { getWhatsappClient } from "../whatsapp/whatsapp.service.js";
 import { emitToAll, emitToConversation } from "../realtime/socket.js";
+import { saveBase64Media } from "../../lib/save-media.js";
 
 async function getMainSession() {
   const session = await prisma.whatsappSession.findFirst();
@@ -70,11 +71,11 @@ export async function handleIncomingWhatsappMessage(message) {
       data: {
         status:
           conversation.status === "CLOSED" ? "WAITING" : conversation.status,
-          lastMessageAt: sentAt,
-          lastInboundAt: sentAt,
-          unreadCount: { increment: 1 },
-          closedAt: null,
-        },
+        lastMessageAt: sentAt,
+        lastInboundAt: sentAt,
+        unreadCount: { increment: 1 },
+        closedAt: null,
+      },
       include: {
         contact: true,
         currentAssignee: true,
@@ -95,26 +96,48 @@ export async function handleIncomingWhatsappMessage(message) {
   }
 
   let messageType = "TEXT";
-  let mediaUrl = null;
-  let mimeType = null;
-  let fileName = null;
+let mediaUrl = null;
+let mimeType = null;
+let fileName = null;
 
-  if (message.hasMedia) {
-    const mime = message._data?.mimetype || "";
+if (message.type === "sticker") {
+  messageType = "STICKER";
+}
 
-    if (mime.startsWith("image/")) {
-      messageType = "IMAGE";
-    } else if (mime.startsWith("audio/")) {
-      messageType = "AUDIO";
-    } else if (mime.startsWith("video/")) {
-      messageType = "VIDEO";
-    } else {
-      messageType = "DOCUMENT";
-    }
+if (message.hasMedia) {
+  const mime = message._data?.mimetype || "";
 
-    mimeType = mime;
-    fileName = message._data?.filename || null;
+  if (mime.startsWith("image/")) {
+    messageType = "IMAGE";
+  } else if (mime.startsWith("audio/")) {
+    messageType = "AUDIO";
+  } else if (mime.startsWith("video/")) {
+    messageType = "VIDEO";
+  } else {
+    messageType = "DOCUMENT";
   }
+
+  mimeType = mime;
+  fileName = message._data?.filename || null;
+
+  try {
+    const media = await message.downloadMedia();
+
+    if (media?.data) {
+      const savedMedia = await saveBase64Media({
+        base64: media.data,
+        mimeType: media.mimetype || mimeType,
+        originalFileName: fileName,
+      });
+
+      mediaUrl = savedMedia.mediaUrl;
+      fileName = savedMedia.fileName;
+      mimeType = media.mimetype || mimeType;
+    }
+  } catch (error) {
+    console.error("Erro ao baixar/salvar mídia:", error);
+  }
+}
 
   const savedMessage = await prisma.message.create({
     data: {
@@ -123,7 +146,7 @@ export async function handleIncomingWhatsappMessage(message) {
       direction: "INBOUND",
       type: messageType,
       body: message.body || null,
-      mediaUrl: mediaUrl,
+      mediaUrl,
       mimeType,
       fileName,
       rawPayload: message?._data ?? null,
