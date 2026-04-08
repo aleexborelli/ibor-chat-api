@@ -20,6 +20,7 @@ export async function handleIncomingWhatsappMessage(message) {
       },
     },
     update: {
+      whatsappId: message.from,
       pushName: message._data?.notifyName || null,
     },
     create: {
@@ -37,7 +38,13 @@ export async function handleIncomingWhatsappMessage(message) {
         contactId: contact.id,
       },
     },
+    include: {
+      contact: true,
+      currentAssignee: true,
+    },
   });
+
+  const sentAt = new Date(message.timestamp * 1000);
 
   if (!conversation) {
     conversation = await prisma.conversation.create({
@@ -45,27 +52,45 @@ export async function handleIncomingWhatsappMessage(message) {
         whatsappSessionId: session.id,
         contactId: contact.id,
         status: "WAITING",
-        startedAt: new Date(),
-        lastMessageAt: new Date(message.timestamp * 1000),
-        lastInboundAt: new Date(message.timestamp * 1000),
+        startedAt: sentAt,
+        lastMessageAt: sentAt,
+        lastInboundAt: sentAt,
         unreadCount: 1,
       },
-      include: { contact: true, currentAssignee: true },
+      include: {
+        contact: true,
+        currentAssignee: true,
+      },
     });
+
     emitToAll("conversation:created", conversation);
   } else {
     conversation = await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         status: conversation.status === "CLOSED" ? "WAITING" : conversation.status,
-        lastMessageAt: new Date(message.timestamp * 1000),
-        lastInboundAt: new Date(message.timestamp * 1000),
+        lastMessageAt: sentAt,
+        lastInboundAt: sentAt,
         unreadCount: { increment: 1 },
         closedAt: null,
       },
-      include: { contact: true, currentAssignee: true },
+      include: {
+        contact: true,
+        currentAssignee: true,
+      },
     });
-    emitToAll("conversation:updated", conversation);
+
+    emitToAll("conversation:updated", {
+      conversationId: conversation.id,
+    });
+  }
+
+  const existingMessage = await prisma.message.findUnique({
+    where: { externalMessageId: message.id._serialized },
+  });
+
+  if (existingMessage) {
+    return existingMessage;
   }
 
   const savedMessage = await prisma.message.create({
@@ -75,14 +100,19 @@ export async function handleIncomingWhatsappMessage(message) {
       direction: "INBOUND",
       type: "TEXT",
       body: message.body || "",
-      rawPayload: message,
+      rawPayload: message?._data ?? null,
       fromMe: false,
-      sentAt: new Date(message.timestamp * 1000),
+      sentAt,
     },
   });
 
   emitToConversation(conversation.id, "message:created", savedMessage);
-  emitToAll("message:created", { conversationId: conversation.id, message: savedMessage });
+  emitToAll("message:created", {
+    conversationId: conversation.id,
+    message: savedMessage,
+  });
+
+  return savedMessage;
 }
 
 export async function handleOutgoingWhatsappMessage(message) {
@@ -105,18 +135,14 @@ export async function handleOutgoingWhatsappMessage(message) {
     throw error;
   }
 
-  const chatId =
-    chat?.id?._serialized ||
-    message.to ||
-    null;
+  const chatId = chat?.id?._serialized || message.to || null;
 
   if (!chatId) {
     console.log("OUTBOUND: não foi possível resolver chatId");
     return null;
   }
 
-  const normalizedPhone = (contactInfo?.number || "")
-    .replace(/\D/g, "");
+  const normalizedPhone = (contactInfo?.number || "").replace(/\D/g, "");
 
   const contactName =
     contactInfo?.pushname ||
@@ -150,18 +176,23 @@ export async function handleOutgoingWhatsappMessage(message) {
       },
     });
   } else {
+    const nextPhone = contact.phone || normalizedPhone || chatId;
+    const nextName = contact.name || contactName;
+    const nextPushName = contact.pushName || contactInfo?.pushname || null;
+
     if (
       contact.whatsappId !== chatId ||
-      (!contact.phone && normalizedPhone) ||
-      (!contact.name && contactName)
+      contact.phone !== nextPhone ||
+      contact.name !== nextName ||
+      contact.pushName !== nextPushName
     ) {
       contact = await prisma.contact.update({
         where: { id: contact.id },
         data: {
           whatsappId: chatId,
-          phone: contact.phone || normalizedPhone || chatId,
-          name: contact.name || contactName,
-          pushName: contact.pushName || contactInfo?.pushname || null,
+          phone: nextPhone,
+          name: nextName,
+          pushName: nextPushName,
         },
       });
     }
@@ -171,6 +202,10 @@ export async function handleOutgoingWhatsappMessage(message) {
     where: {
       whatsappSessionId: session.id,
       contactId: contact.id,
+    },
+    include: {
+      contact: true,
+      currentAssignee: true,
     },
   });
 
@@ -183,7 +218,13 @@ export async function handleOutgoingWhatsappMessage(message) {
         startedAt: new Date(),
         lastMessageAt: new Date(),
       },
+      include: {
+        contact: true,
+        currentAssignee: true,
+      },
     });
+
+    emitToAll("conversation:created", conversation);
   }
 
   const externalMessageId = message.id?._serialized || null;
@@ -197,7 +238,6 @@ export async function handleOutgoingWhatsappMessage(message) {
     });
 
     if (existingMessage) {
-      console.log("OUTBOUND: mensagem já existente");
       return existingMessage;
     }
   }
@@ -237,6 +277,16 @@ export async function handleOutgoingWhatsappMessage(message) {
     },
   });
 
+  emitToConversation(conversation.id, "message:created", createdMessage);
+  emitToAll("message:created", {
+    conversationId: conversation.id,
+    message: createdMessage,
+  });
+
+  emitToAll("conversation:updated", {
+    conversationId: conversation.id,
+  });
+
   return createdMessage;
 }
 
@@ -249,19 +299,15 @@ export async function listConversations({ userId, queue = "all" }) {
   }
 
   if (queue === "mine") {
-    where.status = {
-      not: "CLOSED",
-    };
+    where.status = { not: "CLOSED" };
     where.currentAssigneeId = userId;
   }
 
   if (queue === "all") {
-    where.status = {
-      not: "CLOSED",
-    };
+    where.status = { not: "CLOSED" };
   }
 
-  const conversations = await prisma.conversation.findMany({
+  return prisma.conversation.findMany({
     where,
     include: {
       contact: true,
@@ -279,23 +325,14 @@ export async function listConversations({ userId, queue = "all" }) {
         },
       },
     },
-    orderBy: [
-      { lastMessageAt: "desc" },
-      { updatedAt: "desc" },
-    ],
+    orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
   });
-
-  return conversations;
 }
 
 export async function listMessagesByConversationId(conversationId) {
   return prisma.message.findMany({
-    where: {
-      conversationId,
-    },
-    orderBy: {
-      sentAt: "asc",
-    },
+    where: { conversationId },
+    orderBy: { sentAt: "asc" },
   });
 }
 
@@ -333,50 +370,6 @@ export async function getConversationById(conversationId) {
       },
     },
   });
-}
-
-export async function sendTextMessage({ conversationId, body, userId }) {
-  const conversation = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { contact: true },
-  });
-
-  if (!conversation) throw new Error("Conversa não encontrada");
-
-  const client = getWhatsappClient();
-  if (!client) throw new Error("WhatsApp não inicializado");
-
-  const target = conversation.contact.whatsappId;
-  const sent = await client.sendMessage(target, body);
-
-  const savedMessage = await prisma.message.create({
-    data: {
-      conversationId,
-      sentByUserId: userId,
-      externalMessageId: sent.id._serialized,
-      direction: "OUTBOUND",
-      type: "TEXT",
-      body,
-      rawPayload: sent,
-      fromMe: true,
-      sentAt: new Date(),
-    },
-  });
-
-  await prisma.conversation.update({
-    where: { id: conversationId },
-    data: {
-      lastMessageAt: new Date(),
-      lastOutboundAt: new Date(),
-      status: "IN_PROGRESS",
-      unreadCount: 0,
-    },
-  });
-
-  emitToConversation(conversationId, "message:created", savedMessage);
-  emitToAll("conversation:updated", { id: conversationId });
-
-  return savedMessage;
 }
 
 export async function assumeConversation({ conversationId, userId }) {
@@ -417,6 +410,10 @@ export async function assumeConversation({ conversationId, userId }) {
     },
   });
 
+  emitToAll("conversation:updated", {
+    conversationId: updatedConversation.id,
+  });
+
   return updatedConversation;
 }
 
@@ -455,6 +452,10 @@ export async function closeConversation({ conversationId, userId }) {
       toUserId: null,
       actionType: "CLOSED",
     },
+  });
+
+  emitToAll("conversation:updated", {
+    conversationId: updatedConversation.id,
   });
 
   return updatedConversation;
@@ -542,6 +543,16 @@ export async function sendMessageFromConversation({
       lastOutboundAt: sentAt,
       status: conversation.currentAssigneeId ? "IN_PROGRESS" : conversation.status,
     },
+  });
+
+  emitToConversation(conversation.id, "message:created", createdMessage);
+  emitToAll("message:created", {
+    conversationId: conversation.id,
+    message: createdMessage,
+  });
+
+  emitToAll("conversation:updated", {
+    conversationId: conversation.id,
   });
 
   return createdMessage;
