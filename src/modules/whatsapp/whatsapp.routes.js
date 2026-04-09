@@ -3,7 +3,7 @@ import { authMiddleware } from "../../core/auth.middleware.js";
 import {
   getStatus,
   getQrCode,
-  disconnectSession,
+  disconnectSession
 } from "./whatsapp.controller.js";
 
 const router = Router();
