@@ -11,5 +11,7 @@ const router = Router();
 router.get("/status", authMiddleware, getStatus);
 router.get("/qr", authMiddleware, getQrCode);
 router.post("/disconnect", authMiddleware, disconnectSession);
+router.post("/start", authMiddleware, startSession);
+
 
 export default router;

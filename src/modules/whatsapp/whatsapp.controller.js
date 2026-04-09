@@ -9,6 +9,16 @@ export async function getStatus(req, res, next) {
   }
 }
 
+export async function startSession(req, res, next) {
+  try {
+    await whatsappService.initializeWhatsapp();
+    return res.json({ success: true });
+  } catch (error) {
+    console.log({ error })
+    next(error);
+  }
+}
+
 export async function getQrCode(req, res, next) {
   try {
     const qrCode = await whatsappService.getCurrentQrCode();
